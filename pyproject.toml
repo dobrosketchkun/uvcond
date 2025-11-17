@@ -1,0 +1,9 @@
+[project]
+name = "uvcond"
+version = "0.1.1"
+description = "Conda-like named envs on top of uv"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.scripts]
+uvcond = "uvcond.__main__:main"
