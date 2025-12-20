@@ -19,6 +19,7 @@ uvcond does **not** replace uv; it just gives you a thin “env manager” UX la
 - [Installation](#installation)
 - [Concepts](#concepts)
 - [Basic usage](#basic-usage)
+- [Recipes — shareable environments](#recipes--shareable-environments)
 - [Linux / macOS shell integration](#linux--macos-shell-integration)
 - [Windows shell integration](#windows-shell-integration)
   - [PowerShell](#powershell)
@@ -54,16 +55,26 @@ uv has built-in support for installing tools into isolated environments and expo
 From the project root:
 
 ```bash
-uv tool install -e .
+uv tool install .
 ```
 
 This will:
 
-* Create a tool environment in uv’s tools directory.
-* Install uvcond there.
-* Expose a `uvcond` (or `uvcond.exe` on Windows) script in uv’s tool bin directory.
+* Create a tool environment in uv's tools directory.
+* Copy uvcond into that environment.
+* Expose a `uvcond` (or `uvcond.exe` on Windows) script in uv's tool bin directory.
 
-If uv’s tool bin directory is not on your `PATH`, run:
+You can safely delete or move the source folder after installation.
+
+**For development** (if you want to hack on uvcond itself):
+
+```bash
+uv tool install -e .
+```
+
+The `-e` flag creates an editable install that links to your source folder, so changes take effect immediately — but the folder must stay in place.
+
+If uv's tool bin directory is not on your `PATH`, run:
 
 ```bash
 uv tool update-shell
@@ -188,6 +199,102 @@ uv pip install numpy pandas
 ```
 
 `uv pip` will now install into that active env, as uv uses the active virtual environment when running the pip interface.
+
+---
+
+## Recipes — shareable environments
+
+Recipes let you export an environment as a small, portable TOML file that can recreate the same setup on another machine. Think of it as a shareable snapshot of your env.
+
+### Recipe format
+
+```toml
+[recipe]
+name = "ds-stack"
+python = "3.11"
+
+[recipe.deps]
+packages = ["numpy", "pandas", "matplotlib", "jupyterlab"]
+pinned = ["numpy==1.26.2", "pandas==2.1.3", "matplotlib==3.8.2", "jupyterlab==4.0.9"]
+
+[recipe.post_install]
+commands = [
+    "python -m ipykernel install --user --name ds-stack",
+]
+```
+
+- **packages**: Flexible dependencies (latest compatible versions)
+- **pinned**: Exact versions for reproducibility
+- **post_install.commands**: Shell commands to run after installation (requires `--allow-scripts`)
+
+### Export a recipe from an existing env
+
+```bash
+# Save recipe inside the env (default location)
+uvcond recipe export myenv
+
+# Export to a specific file
+uvcond recipe export myenv --output myenv-recipe.toml
+```
+
+The recipe captures:
+- Python version
+- All installed packages (both flexible and pinned versions)
+- Any existing post-install commands
+
+### Create an env from a recipe
+
+```bash
+# Use flexible package versions (default)
+uvcond recipe apply myenv-recipe.toml
+
+# Use pinned versions for exact reproducibility
+uvcond recipe apply myenv-recipe.toml --pinned
+
+# Override the env name
+uvcond recipe apply myenv-recipe.toml --name my-new-env
+
+# Run post-install commands (opt-in for safety)
+uvcond recipe apply myenv-recipe.toml --allow-scripts
+```
+
+### View an env's recipe
+
+```bash
+uvcond recipe show myenv
+```
+
+### Add post-install commands
+
+```bash
+# Append a command to the recipe
+uvcond recipe post myenv --add "python -m ipykernel install --user --name myenv"
+
+# Replace all post-install commands
+uvcond recipe post myenv --set "echo 'Setup complete'"
+```
+
+### Workflow example
+
+**On machine A** (your laptop):
+
+```bash
+uvcond create ds --python 3.11
+uvcond-use ds
+uv pip install numpy pandas matplotlib jupyterlab
+uvcond recipe post ds --add "python -m ipykernel install --user --name ds"
+uvcond recipe export ds --output ds-stack.toml
+```
+
+Share `ds-stack.toml` via git, email, Slack, etc.
+
+**On machine B** (your colleague's laptop):
+
+```bash
+uvcond recipe apply ds-stack.toml --pinned --allow-scripts
+uvcond-use ds
+jupyter lab
+```
 
 ---
 
