@@ -16,20 +16,142 @@ except ImportError:
 
 
 # =============================================================================
+# Config system
+# =============================================================================
+
+def _default_base_dir() -> Path:
+    """Default base directory (before config is loaded)."""
+    if os.name == "nt":
+        return Path(os.environ.get("USERPROFILE", str(Path.home()))) / ".uvcond"
+    else:
+        return Path.home() / ".uvcond"
+
+
+def config_path() -> Path:
+    """Path to the config file."""
+    return _default_base_dir() / "config.toml"
+
+
+def _load_config() -> Dict[str, Any]:
+    """Load config from file. Returns empty dict if not found."""
+    cfg_path = config_path()
+    if cfg_path.is_file():
+        try:
+            with open(cfg_path, "rb") as f:
+                return tomllib.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+# Cached config (loaded once per run)
+_config_cache: Optional[Dict[str, Any]] = None
+
+
+def get_config() -> Dict[str, Any]:
+    """Get the loaded config (cached)."""
+    global _config_cache
+    if _config_cache is None:
+        _config_cache = _load_config()
+    return _config_cache
+
+
+def get_setting(key: str, default: Any = None) -> Any:
+    """
+    Get a config setting. 
+    Looks in config file first, falls back to default.
+    """
+    cfg = get_config()
+    return cfg.get(key, default)
+
+
+def write_config(cfg: Dict[str, Any]) -> None:
+    """Write config to file."""
+    cfg_path = config_path()
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    lines = [
+        "# uvcond configuration",
+        "# See: uvcond config --help",
+        "",
+    ]
+    
+    if "home" in cfg:
+        lines.append(f'# Base directory for environments')
+        lines.append(f'home = {_toml_value(cfg["home"])}')
+        lines.append("")
+    
+    if "shell" in cfg:
+        lines.append(f'# Default shell for "uvcond spawn"')
+        lines.append(f'# Options: pwsh, powershell, cmd (Windows) / bash, zsh, fish (Unix)')
+        lines.append(f'shell = {_toml_value(cfg["shell"])}')
+        lines.append("")
+    
+    if "editor" in cfg:
+        lines.append(f'# Editor for "uvcond recipe edit" and "uvcond config edit"')
+        lines.append(f'# Examples: code, vim, nano, notepad')
+        lines.append(f'editor = {_toml_value(cfg["editor"])}')
+        lines.append("")
+    
+    cfg_path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def create_default_config() -> Dict[str, Any]:
+    """Create a default config file with commented examples."""
+    cfg_path = config_path()
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    if os.name == "nt":
+        default_content = """\
+# uvcond configuration
+# Uncomment and modify settings as needed.
+
+# Base directory for environments (default: ~/.uvcond)
+# home = "C:\\\\Users\\\\YourName\\\\.uvcond"
+
+# Default shell for "uvcond spawn"
+# Options: pwsh, powershell, cmd
+# shell = "pwsh"
+
+# Editor for "uvcond recipe edit" and "uvcond config edit"
+# Use full path if the editor isn't on your PATH:
+# editor = "notepad"
+# editor = "C:\\\\Program Files\\\\Notepad++\\\\notepad++.exe"
+# editor = "C:\\\\Program Files\\\\Microsoft VS Code\\\\Code.exe"
+# editor = "code"
+"""
+    else:
+        default_content = """\
+# uvcond configuration
+# Uncomment and modify settings as needed.
+
+# Base directory for environments (default: ~/.uvcond)
+# home = "~/.uvcond"
+
+# Default shell for "uvcond spawn"
+# Options: bash, zsh, fish, etc.
+# shell = "bash"
+
+# Editor for "uvcond recipe edit" and "uvcond config edit"
+# Examples: code, vim, nano, emacs
+# editor = "code"
+"""
+    
+    cfg_path.write_text(default_content, encoding="utf-8")
+    return {}
+
+
+# =============================================================================
 # Path helpers
 # =============================================================================
 
 def base_dir() -> Path:
-    env = os.environ.get("UVCOND_HOME")
-    if env:
-        return Path(env).expanduser()
-    # Default per-OS
-    if os.name == "nt":
-        # Windows: use %USERPROFILE%\.uvcond
-        return Path(os.environ.get("USERPROFILE", str(Path.home()))) / ".uvcond"
-    else:
-        # Unix: ~/.uvcond
-        return Path.home() / ".uvcond"
+    """Get the base directory for environments."""
+    # Config file takes priority
+    home = get_setting("home")
+    if home:
+        return Path(home).expanduser()
+    return _default_base_dir()
 
 
 def env_dir(name: str) -> Path:
@@ -39,6 +161,20 @@ def env_dir(name: str) -> Path:
 def recipe_path(env_path: Path) -> Path:
     """Path to the recipe file inside an env."""
     return env_path / "recipe.toml"
+
+
+def get_editor() -> str:
+    """Get the configured editor."""
+    editor = get_setting("editor")
+    if editor:
+        return editor
+    # Fallback to platform default
+    return "notepad" if os.name == "nt" else "vi"
+
+
+def get_shell() -> Optional[str]:
+    """Get the configured shell (or None for auto-detect)."""
+    return get_setting("shell")
 
 
 # =============================================================================
@@ -197,8 +333,8 @@ def cmd_list() -> int:
         print("No environments yet.")
         return 0
     for child in sorted(base.iterdir()):
-        if child.is_dir():
-            # Check if it has a recipe
+        if child.is_dir() and child.name != "config.toml":
+            # Skip config file, check if it has a recipe
             has_recipe = recipe_path(child).is_file()
             suffix = " [recipe]" if has_recipe else ""
             print(f"{child.name}{suffix}")
@@ -219,11 +355,14 @@ def cmd_path(name: str) -> int:
     return 0
 
 
-def cmd_spawn(name: str, shell: Optional[str]) -> int:
+def cmd_spawn(name: str, shell_arg: Optional[str]) -> int:
     target = env_dir(name)
     if not target.is_dir():
         print(f"[uvcond] no env named {name!r} at {target}", file=sys.stderr)
         return 1
+
+    # CLI arg > config > auto-detect
+    shell = shell_arg or get_shell()
 
     if os.name == "nt":
         return _spawn_windows(target, shell)
@@ -237,12 +376,7 @@ def _spawn_unix(target: Path, shell: Optional[str]) -> int:
         print(f"[uvcond] {target} does not look like a venv (no bin/)", file=sys.stderr)
         return 1
 
-    shell = (
-        shell
-        or os.environ.get("UVCOND_SHELL")
-        or os.environ.get("SHELL")
-        or "/bin/bash"
-    )
+    shell = shell or os.environ.get("SHELL") or "/bin/bash"
     shell = os.path.expanduser(shell)
 
     activate = venv_bin / "activate"
@@ -260,7 +394,7 @@ def _spawn_windows(target: Path, shell: Optional[str]) -> int:
         print(f"[uvcond] {target} does not look like a Windows venv (no Scripts\\)", file=sys.stderr)
         return 1
 
-    requested = (shell or os.environ.get("UVCOND_SHELL", "")).lower()
+    requested = (shell or "").lower()
 
     # CMD explicitly requested
     if requested in {"cmd", "cmd.exe"}:
@@ -304,6 +438,173 @@ def _spawn_windows(target: Path, shell: Optional[str]) -> int:
         return 1
     cmdline = f'call "{activate_bat}" && title uvcond:{target.name}'
     return subprocess.call(["cmd.exe", "/K", cmdline])
+
+
+# =============================================================================
+# Config commands
+# =============================================================================
+
+def cmd_config(args: List[str]) -> int:
+    """Handle 'uvcond config' commands."""
+    if not args:
+        # Show current config
+        return cmd_config_show()
+    
+    sub, *rest = args
+    
+    if sub == "path":
+        print(config_path())
+        return 0
+    
+    elif sub == "edit":
+        return cmd_config_edit()
+    
+    elif sub == "init":
+        return cmd_config_init()
+    
+    elif sub == "set":
+        # config set <key> <value>
+        if len(rest) < 2:
+            print("uvcond config set <key> <value>", file=sys.stderr)
+            print("  Keys: home, shell, editor", file=sys.stderr)
+            return 1
+        return cmd_config_set(rest[0], rest[1])
+    
+    elif sub in {"--help", "-h", "help"}:
+        print(
+            "Usage:\n"
+            "  uvcond config              Show current configuration\n"
+            "  uvcond config path         Show config file path\n"
+            "  uvcond config edit         Open config in editor\n"
+            "  uvcond config init         Create default config file\n"
+            "  uvcond config set <k> <v>  Set a config value\n"
+            "\n"
+            "Config keys:\n"
+            "  home     Base directory for environments\n"
+            "  shell    Default shell for 'uvcond spawn'\n"
+            "  editor   Editor for 'uvcond recipe edit'\n"
+        )
+        return 0
+    
+    else:
+        print(f"Unknown config subcommand: {sub}", file=sys.stderr)
+        return 1
+
+
+def cmd_config_show() -> int:
+    """Show current configuration."""
+    cfg_file = config_path()
+    cfg = get_config()
+    
+    print(f"Config file: {cfg_file}")
+    if cfg_file.is_file():
+        print(f"  (exists)")
+    else:
+        print(f"  (not created yet - run 'uvcond config init')")
+    print()
+    
+    print("Current settings:")
+    print(f"  home   = {base_dir()}")
+    print(f"  shell  = {get_shell() or '(auto-detect)'}")
+    print(f"  editor = {get_editor()}")
+    
+    return 0
+
+
+def _open_in_editor(filepath: Path) -> int:
+    """Open a file in the configured editor."""
+    editor = get_editor()
+    
+    # Check if editor exists
+    editor_path = shutil.which(editor)
+    
+    if editor_path:
+        print(f"[uvcond] opening {filepath} in {editor}")
+        return subprocess.call([editor_path, str(filepath)])
+    
+    # On Windows, try common install locations for popular editors
+    if os.name == "nt":
+        common_paths = {
+            "notepad++": [
+                r"C:\Program Files\Notepad++\notepad++.exe",
+                r"C:\Program Files (x86)\Notepad++\notepad++.exe",
+            ],
+            "code": [
+                os.path.expandvars(r"%LOCALAPPDATA%\Programs\Microsoft VS Code\Code.exe"),
+                r"C:\Program Files\Microsoft VS Code\Code.exe",
+            ],
+            "sublime": [
+                r"C:\Program Files\Sublime Text\sublime_text.exe",
+                r"C:\Program Files\Sublime Text 3\sublime_text.exe",
+            ],
+        }
+        
+        for name, paths in common_paths.items():
+            if editor.lower().replace("_", "").replace("-", "") in name.lower().replace("_", "").replace("-", ""):
+                for path in paths:
+                    if os.path.isfile(path):
+                        print(f"[uvcond] opening {filepath} in {path}")
+                        return subprocess.call([path, str(filepath)])
+        
+        # Last resort: try shell=True which might find it via App Paths registry
+        print(f"[uvcond] opening {filepath} in {editor}")
+        result = subprocess.call(f'"{editor}" "{filepath}"', shell=True)
+        if result != 0:
+            print(f"[uvcond] editor '{editor}' not found. Try setting the full path:", file=sys.stderr)
+            print(f'  uvcond config set editor "C:\\path\\to\\editor.exe"', file=sys.stderr)
+        return result
+    else:
+        print(f"[uvcond] opening {filepath} in {editor}")
+        return subprocess.call([editor, str(filepath)])
+
+
+def cmd_config_edit() -> int:
+    """Open config file in editor."""
+    cfg_file = config_path()
+    
+    # Create default if doesn't exist
+    if not cfg_file.is_file():
+        print(f"[uvcond] creating default config at {cfg_file}")
+        create_default_config()
+    
+    return _open_in_editor(cfg_file)
+
+
+def cmd_config_init() -> int:
+    """Create default config file."""
+    cfg_file = config_path()
+    
+    if cfg_file.is_file():
+        print(f"[uvcond] config already exists at {cfg_file}")
+        print(f"[uvcond] use 'uvcond config edit' to modify it")
+        return 0
+    
+    create_default_config()
+    print(f"[uvcond] created config at {cfg_file}")
+    print(f"[uvcond] edit it with 'uvcond config edit'")
+    return 0
+
+
+def cmd_config_set(key: str, value: str) -> int:
+    """Set a config value."""
+    valid_keys = {"home", "shell", "editor"}
+    if key not in valid_keys:
+        print(f"[uvcond] unknown config key: {key}", file=sys.stderr)
+        print(f"[uvcond] valid keys: {', '.join(sorted(valid_keys))}", file=sys.stderr)
+        return 1
+    
+    # Load existing config
+    cfg = get_config().copy()
+    cfg[key] = value
+    
+    write_config(cfg)
+    print(f"[uvcond] set {key} = {value}")
+    
+    # Clear cache so next call sees new value
+    global _config_cache
+    _config_cache = None
+    
+    return 0
 
 
 # =============================================================================
@@ -516,7 +817,7 @@ def cmd_recipe_edit_post(name: str, commands: List[str], append: bool) -> int:
 
 
 def cmd_recipe_edit(name: str) -> int:
-    """Open the recipe file in $EDITOR."""
+    """Open the recipe file in editor."""
     target = env_dir(name)
     if not target.is_dir():
         print(f"[uvcond] no env named {name!r} at {target}", file=sys.stderr)
@@ -531,15 +832,7 @@ def cmd_recipe_edit(name: str) -> int:
         if ret != 0:
             return ret
     
-    # Find editor
-    editor = (
-        os.environ.get("VISUAL")
-        or os.environ.get("EDITOR")
-        or ("notepad" if os.name == "nt" else "vi")
-    )
-    
-    print(f"[uvcond] opening {rpath} in {editor}")
-    return subprocess.call([editor, str(rpath)])
+    return _open_in_editor(rpath)
 
 
 def cmd_recipe(args: List[str]) -> int:
@@ -680,14 +973,21 @@ def cmd_help() -> int:
         "      --pinned             Use pinned versions (exact reproducibility)\n"
         "      --allow-scripts      Run post-install commands\n"
         "  uvcond recipe show <name>                Show env's recipe\n"
-        "  uvcond recipe edit <name>                Edit recipe in $EDITOR\n"
+        "  uvcond recipe edit <name>                Edit recipe in editor\n"
         "  uvcond recipe post <name> [options]      Manage post-install commands\n"
         "      --add 'cmd'          Append a command\n"
         "      --set 'cmd'          Replace all commands\n"
         "      --from FILE          Load commands from file\n"
         "\n"
+        "Config commands:\n"
+        "  uvcond config                            Show current configuration\n"
+        "  uvcond config path                       Show config file path\n"
+        "  uvcond config edit                       Edit config in editor\n"
+        "  uvcond config init                       Create default config file\n"
+        "  uvcond config set <key> <value>          Set a config value\n"
+        "\n"
         f"Base directory: {base_dir()}\n"
-        "Configure with UVCOND_HOME.\n"
+        f"Config file:    {config_path()}\n"
     )
     return 0
 
@@ -725,6 +1025,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return cmd_spawn(name, shell)
     if sub == "recipe":
         return cmd_recipe(rest)
+    if sub == "config":
+        return cmd_config(rest)
 
     return cmd_help()
 
