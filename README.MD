@@ -19,11 +19,11 @@ uvcond does **not** replace uv; it just gives you a thin “env manager” UX la
 - [Installation](#installation)
 - [Concepts](#concepts)
 - [Basic usage](#basic-usage)
+- [Shell integration](#shell-integration)
+  - [Linux / macOS](#linux--macos)
+  - [Windows PowerShell](#windows-powershell)
+  - [Windows cmd](#windows-cmd)
 - [Recipes — shareable environments](#recipes--shareable-environments)
-- [Linux / macOS shell integration](#linux--macos-shell-integration)
-- [Windows shell integration](#windows-shell-integration)
-  - [PowerShell](#powershell)
-  - [cmd](#cmd)
 - [Configuration](#configuration)
 - [Design notes & limitations](#design-notes--limitations)
 - [License](#license)
@@ -90,7 +90,7 @@ and follow the instructions, then restart your shell.
 
   * Unix default: `~/.uvcond`
   * Windows default: `%USERPROFILE%\.uvcond`
-  * Override with `UVCOND_HOME`.
+  * Override with `uvcond config set home /your/path` (see [Configuration](#configuration)).
 
 * **Env layout**: each env is a standard `venv` created via `uv venv` at:
 
@@ -114,6 +114,7 @@ Once installed, `uvcond` is available in any shell.
 
 ```bash
 uvcond create py311 --python 3.11
+uvcond mk py311 --python 3.11    # Short alias
 ```
 
 This is roughly equivalent to:
@@ -122,7 +123,7 @@ This is roughly equivalent to:
 uv venv <base>/py311 --python 3.11
 ```
 
-where `<base>` is derived from `UVCOND_HOME` or the defaults above.
+where `<base>` is from your config or the defaults above.
 
 You can pass any additional `uv venv` arguments after the name.
 
@@ -147,6 +148,7 @@ uvcond path py311
 ```bash
 uvcond delete py311          # Asks for confirmation
 uvcond delete py311 --force  # No confirmation
+uvcond rm py311 -f           # Short form
 ```
 
 ### Spawn a new shell with an env activated
@@ -154,6 +156,7 @@ uvcond delete py311 --force  # No confirmation
 ```bash
 # Uses the shell from config, or auto-detects
 uvcond spawn py311
+uvcond shell py311        # Alias
 
 # Override shell for this spawn:
 uvcond spawn py311 pwsh   # PowerShell
@@ -165,9 +168,11 @@ On Unix, uvcond runs the venv’s `bin/activate` script and then execs a new int
 
 ---
 
-## Linux / macOS shell integration
+## Shell integration
 
-On Unix, you can use `uvcond spawn` for "open a new shell with env active", or you can add a **helper function** to activate an env directly in your current shell.
+While `uvcond spawn` opens a new shell with the env activated, you may want a `conda activate`-style experience that activates an env **in your current shell**. This requires shell-specific helper functions.
+
+### Linux / macOS
 
 Add this to your `~/.bashrc` or `~/.zshrc`:
 
@@ -210,6 +215,97 @@ uv pip install numpy pandas
 ```
 
 `uv pip` will now install into that active env, as uv uses the active virtual environment when running the pip interface.
+
+### Windows PowerShell
+
+You can always use:
+
+```powershell
+uvcond spawn myenv pwsh
+```
+
+to open a **new** PowerShell instance with the env active.
+
+If you want a `conda activate`-style experience **in the current PowerShell session**, add this function to your PowerShell profile (`$PROFILE`):
+
+> **Note**: This function uses the default path `~/.uvcond`. If you've changed `home` in your config, update the `$base` variable below to match.
+
+```powershell
+function uvcond-use {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Name
+    )
+
+    # Change this if you set a custom 'home' in uvcond config
+    $base = Join-Path $HOME ".uvcond"
+
+    $envDir = Join-Path $base $Name
+    $activate = Join-Path $envDir "Scripts\Activate.ps1"
+
+    if (-not (Test-Path $activate)) {
+        Write-Error "[uvcond] env '$Name' not found or no Activate.ps1 at $activate"
+        return
+    }
+
+    . $activate
+    Write-Host "[uvcond] activated '$Name' ($envDir)"
+}
+```
+
+Usage:
+
+```powershell
+uvcond create api --python 3.12
+uvcond-use api
+uv pip install fastapi
+```
+
+PowerShell's `.` (dot-source) operator lets the activation script modify the current session's environment, so use `. $PROFILE`.
+
+### Windows cmd
+
+From cmd, you can spawn a new env-enabled shell:
+
+```bat
+uvcond spawn myenv cmd
+```
+
+To "activate in this cmd session", create a `uvcond-use.bat` file somewhere on your `PATH`, for example `C:\Tools\uvcond-use.bat`:
+
+> **Note**: This script uses the default path `%USERPROFILE%\.uvcond`. If you've changed `home` in your config, update the `BASE` variable below to match.
+
+```bat
+@echo off
+REM Change this if you set a custom 'home' in uvcond config
+set "BASE=%USERPROFILE%\.uvcond"
+
+if "%1"=="" (
+  echo Usage: uvcond-use ^<name^>
+  goto :eof
+)
+
+set "TARGET=%BASE%\%1"
+
+if not exist "%TARGET%\Scripts\activate.bat" (
+  echo [uvcond] env "%1" not found or no Scripts\activate.bat at "%TARGET%"
+  goto :eof
+)
+
+call "%TARGET%\Scripts\activate.bat"
+echo [uvcond] activated "%1" (%TARGET%)
+goto :eof
+```
+
+Then:
+
+```bat
+uvcond create demo --python 3.11
+uvcond-use demo
+uv pip list
+```
+
+The `call` to `Scripts\activate.bat` is the standard way to activate a venv in cmd.
 
 ---
 
@@ -277,7 +373,7 @@ uvcond recipe show myenv
 
 ### Edit a recipe
 
-Open the recipe in your default editor (`$VISUAL`, `$EDITOR`, or fallback to `notepad`/`vi`):
+Open the recipe in your configured editor:
 
 ```bash
 uvcond recipe edit myenv
@@ -290,6 +386,9 @@ If no recipe exists yet, this exports the current env state first, then opens th
 ```bash
 # Set your preferred editor (VS Code, vim, nano, etc.)
 uvcond config set editor code
+
+# On Windows, use full path if editor isn't on PATH:
+uvcond config set editor "C:\Program Files\Notepad++\notepad++.exe"
 ```
 
 See the [Configuration](#configuration) section for more details.
@@ -338,103 +437,6 @@ uvcond recipe apply ds-stack.toml --pinned --allow-scripts
 uvcond-use ds
 jupyter lab
 ```
-
----
-
-## Windows shell integration
-
-### PowerShell
-
-You can always use:
-
-```powershell
-uvcond spawn myenv pwsh
-```
-
-to open a **new** PowerShell instance with the env active.
-
-If you want a `conda activate`-style experience **in the current PowerShell session**, add this function to your PowerShell profile (`$PROFILE`):
-
-> **Note**: This function uses the default path `~/.uvcond`. If you've changed `home` in your config, update the `$base` variable below to match.
-
-```powershell
-function uvcond-use {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Name
-    )
-
-    # Change this if you set a custom 'home' in uvcond config
-    $base = Join-Path $HOME ".uvcond"
-
-    $envDir = Join-Path $base $Name
-    $activate = Join-Path $envDir "Scripts\Activate.ps1"
-
-    if (-not (Test-Path $activate)) {
-        Write-Error "[uvcond] env '$Name' not found or no Activate.ps1 at $activate"
-        return
-    }
-
-    . $activate
-    Write-Host "[uvcond] activated '$Name' ($envDir)"
-}
-```
-
-Usage:
-
-```powershell
-uvcond create api --python 3.12
-uvcond-use api
-uv pip install fastapi
-```
-
-PowerShell’s `.` (dot-source) operator lets the activation script modify the current session’s environment, so use `. $PROFILE`.
-
----
-
-### cmd
-
-From cmd, you can spawn a new env-enabled shell:
-
-```bat
-uvcond spawn myenv cmd
-```
-
-To "activate in this cmd session", create a `uvcond-use.bat` file somewhere on your `PATH`, for example `C:\Tools\uvcond-use.bat`:
-
-> **Note**: This script uses the default path `%USERPROFILE%\.uvcond`. If you've changed `home` in your config, update the `BASE` variable below to match.
-
-```bat
-@echo off
-REM Change this if you set a custom 'home' in uvcond config
-set "BASE=%USERPROFILE%\.uvcond"
-
-if "%1"=="" (
-  echo Usage: uvcond-use ^<name^>
-  goto :eof
-)
-
-set "TARGET=%BASE%\%1"
-
-if not exist "%TARGET%\Scripts\activate.bat" (
-  echo [uvcond] env "%1" not found or no Scripts\activate.bat at "%TARGET%"
-  goto :eof
-)
-
-call "%TARGET%\Scripts\activate.bat"
-echo [uvcond] activated "%1" (%TARGET%)
-goto :eof
-```
-
-Then:
-
-```bat
-uvcond create demo --python 3.11
-uvcond-use demo
-uv pip list
-```
-
-The `call` to `Scripts\activate.bat` is the standard way to activate a venv in cmd.
 
 ---
 
@@ -489,8 +491,14 @@ editor = "code"
 | Key | Description | Default |
 |-----|-------------|---------|
 | `home` | Base directory for environments | `~/.uvcond` |
-| `shell` | Default shell for `spawn` | Auto-detect |
-| `editor` | Editor for `recipe edit` / `config edit` | `notepad` (Win) / `vi` (Unix) |
+| `shell` | Default shell for `spawn` | Auto-detect (pwsh → powershell → cmd on Windows) |
+| `editor` | Editor for `recipe edit` / `config edit` | Auto-detect (checks common paths), falls back to `notepad` (Win) / `vi` (Unix) |
+
+**Windows editor tip:** If your editor isn't on PATH, use the full path:
+
+```bash
+uvcond config set editor "C:\Program Files\Notepad++\notepad++.exe"
+```
 
 ---
 
