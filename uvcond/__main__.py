@@ -515,6 +515,33 @@ def cmd_recipe_edit_post(name: str, commands: List[str], append: bool) -> int:
     return 0
 
 
+def cmd_recipe_edit(name: str) -> int:
+    """Open the recipe file in $EDITOR."""
+    target = env_dir(name)
+    if not target.is_dir():
+        print(f"[uvcond] no env named {name!r} at {target}", file=sys.stderr)
+        return 1
+    
+    rpath = recipe_path(target)
+    
+    # If no recipe exists, create one first
+    if not rpath.is_file():
+        print(f"[uvcond] no recipe found, exporting current env state...")
+        ret = cmd_recipe_export(name, None)
+        if ret != 0:
+            return ret
+    
+    # Find editor
+    editor = (
+        os.environ.get("VISUAL")
+        or os.environ.get("EDITOR")
+        or ("notepad" if os.name == "nt" else "vi")
+    )
+    
+    print(f"[uvcond] opening {rpath} in {editor}")
+    return subprocess.call([editor, str(rpath)])
+
+
 def cmd_recipe(args: List[str]) -> int:
     """Handle 'uvcond recipe <subcommand>' commands."""
     if not args:
@@ -523,8 +550,8 @@ def cmd_recipe(args: List[str]) -> int:
             "  uvcond recipe export <name> [--output FILE]\n"
             "  uvcond recipe apply <file> [--name NAME] [--pinned] [--allow-scripts]\n"
             "  uvcond recipe show <name>\n"
-            "  uvcond recipe post <name> --add 'command' [--add 'command2']\n"
-            "  uvcond recipe post <name> --set 'command' [--set 'command2']\n",
+            "  uvcond recipe edit <name>\n"
+            "  uvcond recipe post <name> --add 'cmd' / --set 'cmd' / --from FILE\n",
             file=sys.stderr,
         )
         return 1
@@ -577,14 +604,21 @@ def cmd_recipe(args: List[str]) -> int:
             return 1
         return cmd_recipe_show(rest[0])
     
-    elif sub == "post":
-        # Parse: post <name> --add 'cmd' / --set 'cmd'
+    elif sub == "edit":
         if not rest:
-            print("uvcond recipe post <name> --add 'command' / --set 'command'", file=sys.stderr)
+            print("uvcond recipe edit <name>", file=sys.stderr)
+            return 1
+        return cmd_recipe_edit(rest[0])
+    
+    elif sub == "post":
+        # Parse: post <name> --add 'cmd' / --set 'cmd' / --from FILE
+        if not rest:
+            print("uvcond recipe post <name> --add 'cmd' / --set 'cmd' / --from FILE", file=sys.stderr)
             return 1
         name = rest[0]
         commands: List[str] = []
         append = True
+        from_file: Optional[str] = None
         i = 1
         while i < len(rest):
             if rest[i] == "--add" and i + 1 < len(rest):
@@ -595,10 +629,30 @@ def cmd_recipe(args: List[str]) -> int:
                 commands.append(rest[i + 1])
                 append = False
                 i += 2
+            elif rest[i] == "--from" and i + 1 < len(rest):
+                from_file = rest[i + 1]
+                i += 2
             else:
                 i += 1
+        
+        # Load commands from file if specified
+        if from_file:
+            from_path = Path(from_file)
+            if not from_path.is_file():
+                print(f"[uvcond] file not found: {from_file}", file=sys.stderr)
+                return 1
+            file_commands = [
+                line.strip()
+                for line in from_path.read_text(encoding="utf-8").splitlines()
+                if line.strip() and not line.strip().startswith("#")
+            ]
+            if not file_commands:
+                print(f"[uvcond] no commands found in {from_file}", file=sys.stderr)
+                return 1
+            commands.extend(file_commands)
+        
         if not commands:
-            print("uvcond recipe post <name> --add 'command' / --set 'command'", file=sys.stderr)
+            print("uvcond recipe post <name> --add 'cmd' / --set 'cmd' / --from FILE", file=sys.stderr)
             return 1
         return cmd_recipe_edit_post(name, commands, append)
     
@@ -626,8 +680,11 @@ def cmd_help() -> int:
         "      --pinned             Use pinned versions (exact reproducibility)\n"
         "      --allow-scripts      Run post-install commands\n"
         "  uvcond recipe show <name>                Show env's recipe\n"
-        "  uvcond recipe post <name> --add 'cmd'    Add post-install command\n"
-        "  uvcond recipe post <name> --set 'cmd'    Replace post-install commands\n"
+        "  uvcond recipe edit <name>                Edit recipe in $EDITOR\n"
+        "  uvcond recipe post <name> [options]      Manage post-install commands\n"
+        "      --add 'cmd'          Append a command\n"
+        "      --set 'cmd'          Replace all commands\n"
+        "      --from FILE          Load commands from file\n"
         "\n"
         f"Base directory: {base_dir()}\n"
         "Configure with UVCOND_HOME.\n"

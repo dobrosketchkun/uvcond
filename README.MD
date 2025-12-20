@@ -264,6 +264,49 @@ uvcond recipe apply myenv-recipe.toml --allow-scripts
 uvcond recipe show myenv
 ```
 
+### Edit a recipe
+
+Open the recipe in your default editor (`$VISUAL`, `$EDITOR`, or fallback to `notepad`/`vi`):
+
+```bash
+uvcond recipe edit myenv
+```
+
+If no recipe exists yet, this exports the current env state first, then opens the file.
+
+#### Editor Configuration
+
+uvcond uses your system's default text editor, checked in this order:
+
+1. **`$VISUAL`** — preferred editor for visual editing (GUI editors)
+2. **`$EDITOR`** — fallback editor (typically terminal-based)
+3. **Platform default** — `notepad` on Windows, `vi` on Unix
+
+**Setting your editor:**
+
+```bash
+# Temporary (current session only)
+export EDITOR=code      # VS Code
+export EDITOR=nano      # Simple terminal editor
+export EDITOR=vim       # Vim
+
+# Permanent (add to ~/.bashrc, ~/.zshrc, etc.)
+echo 'export EDITOR=code' >> ~/.bashrc
+```
+
+**Windows (PowerShell):**
+
+```powershell
+# Temporary
+$env:EDITOR = "notepad.exe"
+
+# Or for VS Code:
+$env:EDITOR = "code"
+
+# Permanent (add to $PROFILE)
+Add-Content $PROFILE '$env:EDITOR = "code"'
+```
+
 ### Add post-install commands
 
 ```bash
@@ -272,6 +315,19 @@ uvcond recipe post myenv --add "python -m ipykernel install --user --name myenv"
 
 # Replace all post-install commands
 uvcond recipe post myenv --set "echo 'Setup complete'"
+
+# Load commands from a file (one command per line, # comments ignored)
+uvcond recipe post myenv --from setup-commands.txt
+```
+
+**Example `setup-commands.txt`:**
+
+```text
+# Install Jupyter kernel
+python -m ipykernel install --user --name myenv
+
+# Install Playwright browsers
+playwright install
 ```
 
 ### Workflow example
