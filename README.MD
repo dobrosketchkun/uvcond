@@ -134,12 +134,19 @@ uvcond list
 
 Shows the names of all directories under the base directory that look like envs.
 
-### Show an environment’s path
+### Show an environment's path
 
 ```bash
 uvcond path py311
 # /home/you/.uvcond/py311    (Linux/macOS)
 # C:\Users\you\.uvcond\py311 (Windows)
+```
+
+### Delete an environment
+
+```bash
+uvcond delete py311          # Asks for confirmation
+uvcond delete py311 --force  # No confirmation
 ```
 
 ### Spawn a new shell with an env activated

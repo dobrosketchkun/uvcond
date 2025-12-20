@@ -355,6 +355,30 @@ def cmd_path(name: str) -> int:
     return 0
 
 
+def cmd_delete(name: str, force: bool) -> int:
+    """Delete an environment."""
+    target = env_dir(name)
+    if not target.is_dir():
+        print(f"[uvcond] no env named {name!r} at {target}", file=sys.stderr)
+        return 1
+    
+    if not force:
+        print(f"[uvcond] this will delete {target}")
+        try:
+            confirm = input("Are you sure? [y/N] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return 1
+        if confirm not in {"y", "yes"}:
+            print("[uvcond] cancelled")
+            return 0
+    
+    print(f"[uvcond] deleting {name!r}...")
+    shutil.rmtree(target)
+    print(f"[uvcond] deleted {name!r}")
+    return 0
+
+
 def cmd_spawn(name: str, shell_arg: Optional[str]) -> int:
     target = env_dir(name)
     if not target.is_dir():
@@ -963,6 +987,7 @@ def cmd_help() -> int:
         "Usage:\n"
         "  uvcond list                              List all environments\n"
         "  uvcond create <name> [uv venv args...]   Create a new environment\n"
+        "  uvcond delete <name> [--force]           Delete an environment\n"
         "  uvcond path <name>                       Print env path\n"
         "  uvcond spawn <name> [shell]              Spawn shell with env activated\n"
         "\n"
@@ -1016,6 +1041,13 @@ def main(argv: Optional[List[str]] = None) -> int:
             print("uvcond path <name>", file=sys.stderr)
             return 1
         return cmd_path(rest[0])
+    if sub in {"delete", "rm"}:
+        if not rest:
+            print("uvcond delete <name> [--force]", file=sys.stderr)
+            return 1
+        name = rest[0]
+        force = "--force" in rest or "-f" in rest
+        return cmd_delete(name, force)
     if sub in {"spawn", "shell"}:
         if not rest:
             print("uvcond spawn <name> [shell]", file=sys.stderr)
