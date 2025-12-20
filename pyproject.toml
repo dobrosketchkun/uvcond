@@ -1,10 +1,11 @@
 [project]
 name = "uvcond"
-version = "0.2.3"
+version = "0.3.0"
 description = "Conda-like named envs on top of uv"
 requires-python = ">=3.9"
 dependencies = [
     "tomli; python_version < '3.11'",
+    "rich",
 ]
 
 [project.scripts]

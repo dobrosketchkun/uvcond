@@ -8,11 +8,27 @@ from pathlib import Path
 from typing import List, Optional, Dict, Any, Tuple
 import shutil
 
+from rich.console import Console
+from rich.theme import Theme
+
 # TOML support: stdlib in 3.11+, tomli package for older
 try:
     import tomllib
 except ImportError:
     import tomli as tomllib  # type: ignore
+
+# Rich console with uv-like theme
+_theme = Theme({
+    "info": "cyan",
+    "success": "green",
+    "warning": "yellow", 
+    "error": "red bold",
+    "path": "cyan",
+    "name": "green bold",
+    "dim": "dim",
+})
+console = Console(theme=_theme, highlight=False)
+err_console = Console(theme=_theme, stderr=True, highlight=False)
 
 
 # =============================================================================
@@ -330,14 +346,18 @@ def get_installed_packages(env_path: Path) -> Tuple[List[str], List[str]]:
 def cmd_list() -> int:
     base = base_dir()
     if not base.is_dir():
-        print("No environments yet.")
+        console.print("[dim]No environments yet.[/dim]")
         return 0
-    for child in sorted(base.iterdir()):
-        if child.is_dir() and child.name != "config.toml":
-            # Skip config file, check if it has a recipe
-            has_recipe = recipe_path(child).is_file()
-            suffix = " [recipe]" if has_recipe else ""
-            print(f"{child.name}{suffix}")
+    envs = [c for c in sorted(base.iterdir()) if c.is_dir() and c.name != "config.toml"]
+    if not envs:
+        console.print("[dim]No environments yet.[/dim]")
+        return 0
+    for child in envs:
+        has_recipe = recipe_path(child).is_file()
+        if has_recipe:
+            console.print(f"[name]{child.name}[/name] [dim]\\[recipe][/dim]")
+        else:
+            console.print(f"[name]{child.name}[/name]")
     return 0
 
 
@@ -345,13 +365,13 @@ def cmd_create(name: str, extra_args: List[str]) -> int:
     base = base_dir()
     base.mkdir(parents=True, exist_ok=True)
     target = env_dir(name)
-    print(f"[uvcond] creating {name!r} at {target}")
+    console.print(f"[info]Creating[/info] [name]{name}[/name] [dim]at[/dim] [path]{target}[/path]")
     # delegate to uv venv
     return subprocess.call(["uv", "venv", str(target), *extra_args])
 
 
 def cmd_path(name: str) -> int:
-    print(env_dir(name))
+    console.print(f"[path]{env_dir(name)}[/path]")
     return 0
 
 
@@ -359,30 +379,30 @@ def cmd_delete(name: str, force: bool) -> int:
     """Delete an environment."""
     target = env_dir(name)
     if not target.is_dir():
-        print(f"[uvcond] no env named {name!r} at {target}", file=sys.stderr)
+        err_console.print(f"[error]error[/error]: no env named [name]{name}[/name] at [path]{target}[/path]")
         return 1
     
     if not force:
-        print(f"[uvcond] this will delete {target}")
+        console.print(f"[warning]This will delete[/warning] [path]{target}[/path]")
         try:
-            confirm = input("Are you sure? [y/N] ").strip().lower()
+            confirm = console.input("[dim]Are you sure?[/dim] [y/N] ").strip().lower()
         except (EOFError, KeyboardInterrupt):
-            print()
+            console.print()
             return 1
         if confirm not in {"y", "yes"}:
-            print("[uvcond] cancelled")
+            console.print("[dim]Cancelled[/dim]")
             return 0
     
-    print(f"[uvcond] deleting {name!r}...")
+    console.print(f"[info]Deleting[/info] [name]{name}[/name]...")
     shutil.rmtree(target)
-    print(f"[uvcond] deleted {name!r}")
+    console.print(f"[success]Deleted[/success] [name]{name}[/name]")
     return 0
 
 
 def cmd_spawn(name: str, shell_arg: Optional[str]) -> int:
     target = env_dir(name)
     if not target.is_dir():
-        print(f"[uvcond] no env named {name!r} at {target}", file=sys.stderr)
+        err_console.print(f"[error]error[/error]: no env named [name]{name}[/name] at [path]{target}[/path]")
         return 1
 
     # CLI arg > config > auto-detect
@@ -397,7 +417,7 @@ def cmd_spawn(name: str, shell_arg: Optional[str]) -> int:
 def _spawn_unix(target: Path, shell: Optional[str]) -> int:
     venv_bin = target / "bin"
     if not venv_bin.is_dir():
-        print(f"[uvcond] {target} does not look like a venv (no bin/)", file=sys.stderr)
+        err_console.print(f"[error]error[/error]: [path]{target}[/path] does not look like a venv (no bin/)")
         return 1
 
     shell = shell or os.environ.get("SHELL") or "/bin/bash"
@@ -405,7 +425,7 @@ def _spawn_unix(target: Path, shell: Optional[str]) -> int:
 
     activate = venv_bin / "activate"
     if not activate.is_file():
-        print(f"[uvcond] no activate script at {activate}", file=sys.stderr)
+        err_console.print(f"[error]error[/error]: no activate script at [path]{activate}[/path]")
         return 1
 
     cmdline = f'. "{activate}" && exec "{shell}" -i'
@@ -415,7 +435,7 @@ def _spawn_unix(target: Path, shell: Optional[str]) -> int:
 def _spawn_windows(target: Path, shell: Optional[str]) -> int:
     scripts = target / "Scripts"
     if not scripts.is_dir():
-        print(f"[uvcond] {target} does not look like a Windows venv (no Scripts\\)", file=sys.stderr)
+        err_console.print(f"[error]error[/error]: [path]{target}[/path] does not look like a Windows venv (no Scripts\\)")
         return 1
 
     requested = (shell or "").lower()
@@ -424,7 +444,7 @@ def _spawn_windows(target: Path, shell: Optional[str]) -> int:
     if requested in {"cmd", "cmd.exe"}:
         activate_bat = scripts / "activate.bat"
         if not activate_bat.is_file():
-            print(f"[uvcond] no activate.bat at {activate_bat}", file=sys.stderr)
+            err_console.print(f"[error]error[/error]: no activate.bat at [path]{activate_bat}[/path]")
             return 1
         full_cmd = f'call "{activate_bat}" && title uvcond:{target.name}'
         return subprocess.call(f'cmd.exe /K {full_cmd}', shell=True)
@@ -433,11 +453,11 @@ def _spawn_windows(target: Path, shell: Optional[str]) -> int:
     if requested in {"pwsh", "powershell"}:
         exe = shutil.which("pwsh") if requested == "pwsh" else shutil.which("powershell")
         if not exe:
-            print(f"[uvcond] requested shell {requested!r} not found on PATH", file=sys.stderr)
+            err_console.print(f"[error]error[/error]: requested shell [name]{requested}[/name] not found on PATH")
             return 1
         activate_ps1 = scripts / "Activate.ps1"
         if not activate_ps1.is_file():
-            print(f"[uvcond] no Activate.ps1 at {activate_ps1}", file=sys.stderr)
+            err_console.print(f"[error]error[/error]: no Activate.ps1 at [path]{activate_ps1}[/path]")
             return 1
         cmdline = f'& "{activate_ps1}"'
         return subprocess.call([exe, "-NoLogo", "-NoExit", "-Command", cmdline])
@@ -450,7 +470,7 @@ def _spawn_windows(target: Path, shell: Optional[str]) -> int:
 
     if exe_pwsh or exe_ps:
         if not activate_ps1.is_file():
-            print(f"[uvcond] no Activate.ps1 at {activate_ps1}", file=sys.stderr)
+            err_console.print(f"[error]error[/error]: no Activate.ps1 at [path]{activate_ps1}[/path]")
             return 1
         exe = exe_pwsh or exe_ps
         cmdline = f'& "{activate_ps1}"'
@@ -458,7 +478,7 @@ def _spawn_windows(target: Path, shell: Optional[str]) -> int:
 
     # Fall back to cmd
     if not activate_bat.is_file():
-        print(f"[uvcond] no activate.bat at {activate_bat}", file=sys.stderr)
+        err_console.print(f"[error]error[/error]: no activate.bat at [path]{activate_bat}[/path]")
         return 1
     cmdline = f'call "{activate_bat}" && title uvcond:{target.name}'
     return subprocess.call(["cmd.exe", "/K", cmdline])
@@ -477,7 +497,7 @@ def cmd_config(args: List[str]) -> int:
     sub, *rest = args
     
     if sub == "path":
-        print(config_path())
+        console.print(f"[path]{config_path()}[/path]")
         return 0
     
     elif sub == "edit":
@@ -489,29 +509,29 @@ def cmd_config(args: List[str]) -> int:
     elif sub == "set":
         # config set <key> <value>
         if len(rest) < 2:
-            print("uvcond config set <key> <value>", file=sys.stderr)
-            print("  Keys: home, shell, editor", file=sys.stderr)
+            err_console.print("[dim]Usage:[/dim] uvcond config set <key> <value>")
+            err_console.print("[dim]  Keys: home, shell, editor[/dim]")
             return 1
         return cmd_config_set(rest[0], rest[1])
     
     elif sub in {"--help", "-h", "help"}:
-        print(
-            "Usage:\n"
+        console.print(
+            "[dim]Usage:[/dim]\n"
             "  uvcond config              Show current configuration\n"
             "  uvcond config path         Show config file path\n"
             "  uvcond config edit         Open config in editor\n"
             "  uvcond config init         Create default config file\n"
             "  uvcond config set <k> <v>  Set a config value\n"
             "\n"
-            "Config keys:\n"
-            "  home     Base directory for environments\n"
-            "  shell    Default shell for 'uvcond spawn'\n"
-            "  editor   Editor for 'uvcond recipe edit'\n"
+            "[dim]Config keys:[/dim]\n"
+            "  [info]home[/info]     Base directory for environments\n"
+            "  [info]shell[/info]    Default shell for 'uvcond spawn'\n"
+            "  [info]editor[/info]   Editor for 'uvcond recipe edit'"
         )
         return 0
     
     else:
-        print(f"Unknown config subcommand: {sub}", file=sys.stderr)
+        err_console.print(f"[error]error[/error]: unknown config subcommand: [name]{sub}[/name]")
         return 1
 
 
@@ -520,17 +540,17 @@ def cmd_config_show() -> int:
     cfg_file = config_path()
     cfg = get_config()
     
-    print(f"Config file: {cfg_file}")
+    console.print(f"[dim]Config file:[/dim] [path]{cfg_file}[/path]")
     if cfg_file.is_file():
-        print(f"  (exists)")
+        console.print(f"  [success](exists)[/success]")
     else:
-        print(f"  (not created yet - run 'uvcond config init')")
-    print()
+        console.print(f"  [dim](not created yet - run 'uvcond config init')[/dim]")
+    console.print()
     
-    print("Current settings:")
-    print(f"  home   = {base_dir()}")
-    print(f"  shell  = {get_shell() or '(auto-detect)'}")
-    print(f"  editor = {get_editor()}")
+    console.print("[dim]Current settings:[/dim]")
+    console.print(f"  [info]home[/info]   = [path]{base_dir()}[/path]")
+    console.print(f"  [info]shell[/info]  = [name]{get_shell() or '(auto-detect)'}[/name]")
+    console.print(f"  [info]editor[/info] = [name]{get_editor()}[/name]")
     
     return 0
 
@@ -543,7 +563,7 @@ def _open_in_editor(filepath: Path) -> int:
     editor_path = shutil.which(editor)
     
     if editor_path:
-        print(f"[uvcond] opening {filepath} in {editor}")
+        console.print(f"[info]Opening[/info] [path]{filepath}[/path] [dim]in {editor}[/dim]")
         return subprocess.call([editor_path, str(filepath)])
     
     # On Windows, try common install locations for popular editors
@@ -567,18 +587,18 @@ def _open_in_editor(filepath: Path) -> int:
             if editor.lower().replace("_", "").replace("-", "") in name.lower().replace("_", "").replace("-", ""):
                 for path in paths:
                     if os.path.isfile(path):
-                        print(f"[uvcond] opening {filepath} in {path}")
+                        console.print(f"[info]Opening[/info] [path]{filepath}[/path] [dim]in {path}[/dim]")
                         return subprocess.call([path, str(filepath)])
         
         # Last resort: try shell=True which might find it via App Paths registry
-        print(f"[uvcond] opening {filepath} in {editor}")
+        console.print(f"[info]Opening[/info] [path]{filepath}[/path] [dim]in {editor}[/dim]")
         result = subprocess.call(f'"{editor}" "{filepath}"', shell=True)
         if result != 0:
-            print(f"[uvcond] editor '{editor}' not found. Try setting the full path:", file=sys.stderr)
-            print(f'  uvcond config set editor "C:\\path\\to\\editor.exe"', file=sys.stderr)
+            err_console.print(f"[error]error[/error]: editor [name]{editor}[/name] not found")
+            err_console.print(f'[dim]Try: uvcond config set editor "C:\\path\\to\\editor.exe"[/dim]')
         return result
     else:
-        print(f"[uvcond] opening {filepath} in {editor}")
+        console.print(f"[info]Opening[/info] [path]{filepath}[/path] [dim]in {editor}[/dim]")
         return subprocess.call([editor, str(filepath)])
 
 
@@ -588,7 +608,7 @@ def cmd_config_edit() -> int:
     
     # Create default if doesn't exist
     if not cfg_file.is_file():
-        print(f"[uvcond] creating default config at {cfg_file}")
+        console.print(f"[info]Creating[/info] default config at [path]{cfg_file}[/path]")
         create_default_config()
     
     return _open_in_editor(cfg_file)
@@ -599,13 +619,13 @@ def cmd_config_init() -> int:
     cfg_file = config_path()
     
     if cfg_file.is_file():
-        print(f"[uvcond] config already exists at {cfg_file}")
-        print(f"[uvcond] use 'uvcond config edit' to modify it")
+        console.print(f"[warning]Config already exists[/warning] at [path]{cfg_file}[/path]")
+        console.print(f"[dim]Use 'uvcond config edit' to modify it[/dim]")
         return 0
     
     create_default_config()
-    print(f"[uvcond] created config at {cfg_file}")
-    print(f"[uvcond] edit it with 'uvcond config edit'")
+    console.print(f"[success]Created[/success] config at [path]{cfg_file}[/path]")
+    console.print(f"[dim]Edit it with 'uvcond config edit'[/dim]")
     return 0
 
 
@@ -613,8 +633,8 @@ def cmd_config_set(key: str, value: str) -> int:
     """Set a config value."""
     valid_keys = {"home", "shell", "editor"}
     if key not in valid_keys:
-        print(f"[uvcond] unknown config key: {key}", file=sys.stderr)
-        print(f"[uvcond] valid keys: {', '.join(sorted(valid_keys))}", file=sys.stderr)
+        err_console.print(f"[error]error[/error]: unknown config key [name]{key}[/name]")
+        err_console.print(f"[dim]Valid keys: {', '.join(sorted(valid_keys))}[/dim]")
         return 1
     
     # Load existing config
@@ -622,7 +642,7 @@ def cmd_config_set(key: str, value: str) -> int:
     cfg[key] = value
     
     write_config(cfg)
-    print(f"[uvcond] set {key} = {value}")
+    console.print(f"[success]Set[/success] [info]{key}[/info] = [name]{value}[/name]")
     
     # Clear cache so next call sees new value
     global _config_cache
@@ -639,13 +659,13 @@ def cmd_recipe_export(name: str, output: Optional[str]) -> int:
     """Export a recipe from an existing environment."""
     target = env_dir(name)
     if not target.is_dir():
-        print(f"[uvcond] no env named {name!r} at {target}", file=sys.stderr)
+        err_console.print(f"[error]error[/error]: no env named [name]{name}[/name] at [path]{target}[/path]")
         return 1
     
     # Gather env info
     python_ver = get_python_version(target)
     if not python_ver:
-        print(f"[uvcond] could not determine Python version for {name!r}", file=sys.stderr)
+        err_console.print(f"[error]error[/error]: could not determine Python version for [name]{name}[/name]")
         return 1
     
     unpinned, pinned = get_installed_packages(target)
@@ -680,7 +700,7 @@ def cmd_recipe_export(name: str, output: Optional[str]) -> int:
         out_path = existing_recipe_path
     
     write_recipe_toml(out_path, recipe)
-    print(f"[uvcond] recipe exported to {out_path}")
+    console.print(f"[success]Exported[/success] recipe to [path]{out_path}[/path]")
     return 0
 
 
@@ -693,38 +713,38 @@ def cmd_recipe_apply(
     """Create an environment from a recipe file."""
     recipe_src = Path(recipe_file)
     if not recipe_src.is_file():
-        print(f"[uvcond] recipe file not found: {recipe_file}", file=sys.stderr)
+        err_console.print(f"[error]error[/error]: recipe file not found: [path]{recipe_file}[/path]")
         return 1
     
     try:
         recipe = read_recipe_toml(recipe_src)
     except Exception as e:
-        print(f"[uvcond] failed to parse recipe: {e}", file=sys.stderr)
+        err_console.print(f"[error]error[/error]: failed to parse recipe: {e}")
         return 1
     
     # Determine env name
     env_name = name or recipe.get("name")
     if not env_name:
-        print("[uvcond] no env name provided and recipe has no 'name' field", file=sys.stderr)
+        err_console.print("[error]error[/error]: no env name provided and recipe has no 'name' field")
         return 1
     
     target = env_dir(env_name)
     if target.exists():
-        print(f"[uvcond] env {env_name!r} already exists at {target}", file=sys.stderr)
+        err_console.print(f"[error]error[/error]: env [name]{env_name}[/name] already exists at [path]{target}[/path]")
         return 1
     
     # Get Python version
     python_ver = recipe.get("python")
     
     # Create the venv
-    print(f"[uvcond] creating env {env_name!r} from recipe...")
+    console.print(f"[info]Creating[/info] env [name]{env_name}[/name] from recipe...")
     create_args = ["uv", "venv", str(target)]
     if python_ver:
         create_args.extend(["--python", python_ver])
     
     ret = subprocess.call(create_args)
     if ret != 0:
-        print(f"[uvcond] failed to create venv", file=sys.stderr)
+        err_console.print(f"[error]error[/error]: failed to create venv")
         return ret
     
     # Install dependencies
@@ -733,21 +753,21 @@ def cmd_recipe_apply(
     
     if use_pinned and deps.get("pinned"):
         packages_to_install = deps["pinned"]
-        print(f"[uvcond] installing {len(packages_to_install)} pinned packages...")
+        console.print(f"[info]Installing[/info] {len(packages_to_install)} pinned packages...")
     elif deps.get("packages"):
         packages_to_install = deps["packages"]
-        print(f"[uvcond] installing {len(packages_to_install)} packages...")
+        console.print(f"[info]Installing[/info] {len(packages_to_install)} packages...")
     
     if packages_to_install:
         python = get_python_executable(target)
         if not python:
-            print(f"[uvcond] could not find Python in created env", file=sys.stderr)
+            err_console.print(f"[error]error[/error]: could not find Python in created env")
             return 1
         
         install_cmd = ["uv", "pip", "install", "--python", str(python)] + packages_to_install
         ret = subprocess.call(install_cmd)
         if ret != 0:
-            print(f"[uvcond] failed to install packages", file=sys.stderr)
+            err_console.print(f"[error]error[/error]: failed to install packages")
             return ret
     
     # Run post-install commands (only if --allow-scripts)
@@ -755,9 +775,9 @@ def cmd_recipe_apply(
     commands = post_install.get("commands", [])
     
     if commands and not allow_scripts:
-        print(f"[uvcond] recipe has {len(commands)} post-install command(s), skipped (use --allow-scripts to run)")
+        console.print(f"[warning]Skipped[/warning] {len(commands)} post-install command(s) [dim](use --allow-scripts to run)[/dim]")
     elif commands and allow_scripts:
-        print(f"[uvcond] running {len(commands)} post-install command(s)...")
+        console.print(f"[info]Running[/info] {len(commands)} post-install command(s)...")
         
         # Set up environment with venv activated
         env = os.environ.copy()
@@ -771,15 +791,15 @@ def cmd_recipe_apply(
             env["VIRTUAL_ENV"] = str(target)
         
         for i, cmd in enumerate(commands, 1):
-            print(f"[uvcond]   ({i}/{len(commands)}) {cmd}")
+            console.print(f"  [dim]({i}/{len(commands)})[/dim] {cmd}")
             ret = subprocess.call(cmd, shell=True, env=env, cwd=str(target))
             if ret != 0:
-                print(f"[uvcond] post-install command failed with exit code {ret}", file=sys.stderr)
+                err_console.print(f"[error]error[/error]: post-install command failed with exit code {ret}")
                 return ret
     
     # Save the recipe into the env
     write_recipe_toml(recipe_path(target), recipe)
-    print(f"[uvcond] env {env_name!r} created successfully at {target}")
+    console.print(f"[success]Created[/success] [name]{env_name}[/name] at [path]{target}[/path]")
     return 0
 
 
@@ -787,15 +807,15 @@ def cmd_recipe_show(name: str) -> int:
     """Show the recipe for an environment."""
     target = env_dir(name)
     if not target.is_dir():
-        print(f"[uvcond] no env named {name!r} at {target}", file=sys.stderr)
+        err_console.print(f"[error]error[/error]: no env named [name]{name}[/name] at [path]{target}[/path]")
         return 1
     
     rpath = recipe_path(target)
     if not rpath.is_file():
-        print(f"[uvcond] env {name!r} has no recipe (use 'uvcond recipe export {name}' to create one)")
+        console.print(f"[dim]Env[/dim] [name]{name}[/name] [dim]has no recipe (use 'uvcond recipe export {name}' to create one)[/dim]")
         return 0
     
-    print(rpath.read_text(encoding="utf-8"))
+    console.print(rpath.read_text(encoding="utf-8"))
     return 0
 
 
@@ -803,7 +823,7 @@ def cmd_recipe_edit_post(name: str, commands: List[str], append: bool) -> int:
     """Add or replace post-install commands in a recipe."""
     target = env_dir(name)
     if not target.is_dir():
-        print(f"[uvcond] no env named {name!r} at {target}", file=sys.stderr)
+        err_console.print(f"[error]error[/error]: no env named [name]{name}[/name] at [path]{target}[/path]")
         return 1
     
     rpath = recipe_path(target)
@@ -836,7 +856,7 @@ def cmd_recipe_edit_post(name: str, commands: List[str], append: bool) -> int:
         recipe["post_install"]["commands"] = commands
     
     write_recipe_toml(rpath, recipe)
-    print(f"[uvcond] updated post-install commands for {name!r}")
+    console.print(f"[success]Updated[/success] post-install commands for [name]{name}[/name]")
     return 0
 
 
@@ -844,14 +864,14 @@ def cmd_recipe_edit(name: str) -> int:
     """Open the recipe file in editor."""
     target = env_dir(name)
     if not target.is_dir():
-        print(f"[uvcond] no env named {name!r} at {target}", file=sys.stderr)
+        err_console.print(f"[error]error[/error]: no env named [name]{name}[/name] at [path]{target}[/path]")
         return 1
     
     rpath = recipe_path(target)
     
     # If no recipe exists, create one first
     if not rpath.is_file():
-        print(f"[uvcond] no recipe found, exporting current env state...")
+        console.print(f"[info]No recipe found[/info], exporting current env state...")
         ret = cmd_recipe_export(name, None)
         if ret != 0:
             return ret
@@ -862,14 +882,13 @@ def cmd_recipe_edit(name: str) -> int:
 def cmd_recipe(args: List[str]) -> int:
     """Handle 'uvcond recipe <subcommand>' commands."""
     if not args:
-        print(
-            "Usage:\n"
+        err_console.print(
+            "[dim]Usage:[/dim]\n"
             "  uvcond recipe export <name> [--output FILE]\n"
             "  uvcond recipe apply <file> [--name NAME] [--pinned] [--allow-scripts]\n"
             "  uvcond recipe show <name>\n"
             "  uvcond recipe edit <name>\n"
-            "  uvcond recipe post <name> --add 'cmd' / --set 'cmd' / --from FILE\n",
-            file=sys.stderr,
+            "  uvcond recipe post <name> --add 'cmd' / --set 'cmd' / --from FILE"
         )
         return 1
     
@@ -878,7 +897,7 @@ def cmd_recipe(args: List[str]) -> int:
     if sub == "export":
         # Parse: export <name> [--output FILE]
         if not rest:
-            print("uvcond recipe export <name> [--output FILE]", file=sys.stderr)
+            err_console.print("[dim]Usage:[/dim] uvcond recipe export <name> [--output FILE]")
             return 1
         name = rest[0]
         output = None
@@ -894,7 +913,7 @@ def cmd_recipe(args: List[str]) -> int:
     elif sub == "apply":
         # Parse: apply <file> [--name NAME] [--pinned] [--allow-scripts]
         if not rest:
-            print("uvcond recipe apply <file> [--name NAME] [--pinned] [--allow-scripts]", file=sys.stderr)
+            err_console.print("[dim]Usage:[/dim] uvcond recipe apply <file> [--name NAME] [--pinned] [--allow-scripts]")
             return 1
         recipe_file = rest[0]
         name = None
@@ -917,20 +936,20 @@ def cmd_recipe(args: List[str]) -> int:
     
     elif sub == "show":
         if not rest:
-            print("uvcond recipe show <name>", file=sys.stderr)
+            err_console.print("[dim]Usage:[/dim] uvcond recipe show <name>")
             return 1
         return cmd_recipe_show(rest[0])
     
     elif sub == "edit":
         if not rest:
-            print("uvcond recipe edit <name>", file=sys.stderr)
+            err_console.print("[dim]Usage:[/dim] uvcond recipe edit <name>")
             return 1
         return cmd_recipe_edit(rest[0])
     
     elif sub == "post":
         # Parse: post <name> --add 'cmd' / --set 'cmd' / --from FILE
         if not rest:
-            print("uvcond recipe post <name> --add 'cmd' / --set 'cmd' / --from FILE", file=sys.stderr)
+            err_console.print("[dim]Usage:[/dim] uvcond recipe post <name> --add 'cmd' / --set 'cmd' / --from FILE")
             return 1
         name = rest[0]
         commands: List[str] = []
@@ -956,7 +975,7 @@ def cmd_recipe(args: List[str]) -> int:
         if from_file:
             from_path = Path(from_file)
             if not from_path.is_file():
-                print(f"[uvcond] file not found: {from_file}", file=sys.stderr)
+                err_console.print(f"[error]error[/error]: file not found: [path]{from_file}[/path]")
                 return 1
             file_commands = [
                 line.strip()
@@ -964,17 +983,17 @@ def cmd_recipe(args: List[str]) -> int:
                 if line.strip() and not line.strip().startswith("#")
             ]
             if not file_commands:
-                print(f"[uvcond] no commands found in {from_file}", file=sys.stderr)
+                err_console.print(f"[error]error[/error]: no commands found in [path]{from_file}[/path]")
                 return 1
             commands.extend(file_commands)
         
         if not commands:
-            print("uvcond recipe post <name> --add 'cmd' / --set 'cmd' / --from FILE", file=sys.stderr)
+            err_console.print("[dim]Usage:[/dim] uvcond recipe post <name> --add 'cmd' / --set 'cmd' / --from FILE")
             return 1
         return cmd_recipe_edit_post(name, commands, append)
     
     else:
-        print(f"Unknown recipe subcommand: {sub}", file=sys.stderr)
+        err_console.print(f"[error]error[/error]: unknown recipe subcommand: [name]{sub}[/name]")
         return 1
 
 
@@ -983,36 +1002,38 @@ def cmd_recipe(args: List[str]) -> int:
 # =============================================================================
 
 def cmd_help() -> int:
-    print(
-        "Usage:\n"
-        "  uvcond list                              List all environments\n"
-        "  uvcond create <name> [uv venv args...]   Create a new environment\n"
-        "  uvcond delete <name> [--force]           Delete an environment\n"
-        "  uvcond path <name>                       Print env path\n"
-        "  uvcond spawn <name> [shell]              Spawn shell with env activated\n"
+    console.print(
+        "[bold]uvcond[/bold] - Conda-like named environments on top of uv\n"
         "\n"
-        "Recipe commands:\n"
-        "  uvcond recipe export <name> [-o FILE]    Export recipe from env\n"
-        "  uvcond recipe apply <file> [options]     Create env from recipe\n"
+        "[dim]Usage:[/dim]\n"
+        "  uvcond [info]list[/info]                              List all environments\n"
+        "  uvcond [info]create[/info] <name> [uv venv args...]   Create a new environment\n"
+        "  uvcond [info]delete[/info] <name> [--force]           Delete an environment\n"
+        "  uvcond [info]path[/info] <name>                       Print env path\n"
+        "  uvcond [info]spawn[/info] <name> [shell]              Spawn shell with env activated\n"
+        "\n"
+        "[dim]Recipe commands:[/dim]\n"
+        "  uvcond recipe [info]export[/info] <name> [-o FILE]    Export recipe from env\n"
+        "  uvcond recipe [info]apply[/info] <file> [options]     Create env from recipe\n"
         "      --name NAME          Override env name\n"
         "      --pinned             Use pinned versions (exact reproducibility)\n"
         "      --allow-scripts      Run post-install commands\n"
-        "  uvcond recipe show <name>                Show env's recipe\n"
-        "  uvcond recipe edit <name>                Edit recipe in editor\n"
-        "  uvcond recipe post <name> [options]      Manage post-install commands\n"
+        "  uvcond recipe [info]show[/info] <name>                Show env's recipe\n"
+        "  uvcond recipe [info]edit[/info] <name>                Edit recipe in editor\n"
+        "  uvcond recipe [info]post[/info] <name> [options]      Manage post-install commands\n"
         "      --add 'cmd'          Append a command\n"
         "      --set 'cmd'          Replace all commands\n"
         "      --from FILE          Load commands from file\n"
         "\n"
-        "Config commands:\n"
-        "  uvcond config                            Show current configuration\n"
-        "  uvcond config path                       Show config file path\n"
-        "  uvcond config edit                       Edit config in editor\n"
-        "  uvcond config init                       Create default config file\n"
-        "  uvcond config set <key> <value>          Set a config value\n"
+        "[dim]Config commands:[/dim]\n"
+        "  uvcond [info]config[/info]                            Show current configuration\n"
+        "  uvcond config [info]path[/info]                       Show config file path\n"
+        "  uvcond config [info]edit[/info]                       Edit config in editor\n"
+        "  uvcond config [info]init[/info]                       Create default config file\n"
+        "  uvcond config [info]set[/info] <key> <value>          Set a config value\n"
         "\n"
-        f"Base directory: {base_dir()}\n"
-        f"Config file:    {config_path()}\n"
+        f"[dim]Base directory:[/dim] [path]{base_dir()}[/path]\n"
+        f"[dim]Config file:[/dim]    [path]{config_path()}[/path]"
     )
     return 0
 
@@ -1032,25 +1053,25 @@ def main(argv: Optional[List[str]] = None) -> int:
         return cmd_list()
     if sub in {"create", "mk"}:
         if not rest:
-            print("uvcond create <name> [extra uv venv args...]", file=sys.stderr)
+            err_console.print("[dim]Usage:[/dim] uvcond create <name> [extra uv venv args...]")
             return 1
         name, *extra = rest
         return cmd_create(name, extra)
     if sub == "path":
         if not rest:
-            print("uvcond path <name>", file=sys.stderr)
+            err_console.print("[dim]Usage:[/dim] uvcond path <name>")
             return 1
         return cmd_path(rest[0])
     if sub in {"delete", "rm"}:
         if not rest:
-            print("uvcond delete <name> [--force]", file=sys.stderr)
+            err_console.print("[dim]Usage:[/dim] uvcond delete <name> [--force]")
             return 1
         name = rest[0]
         force = "--force" in rest or "-f" in rest
         return cmd_delete(name, force)
     if sub in {"spawn", "shell"}:
         if not rest:
-            print("uvcond spawn <name> [shell]", file=sys.stderr)
+            err_console.print("[dim]Usage:[/dim] uvcond spawn <name> [shell]")
             return 1
         name = rest[0]
         shell = rest[1] if len(rest) > 1 else None
