@@ -143,6 +143,35 @@ uvcond path py311
 # C:\Users\you\.uvcond\py311 (Windows)
 ```
 
+### Show environment information
+
+```bash
+uvcond info py311
+# Environment: py311
+# Path: /home/you/.uvcond/py311
+# Python: 3.11
+# Description: (none)
+# Packages: 42 installed
+```
+
+### Set environment description
+
+```bash
+# Set description
+uvcond describe py311 "Web development environment with Django"
+uvcond recipe describe py311 "Data science environment with ML libraries"
+
+# Multi-line descriptions work too:
+uvcond describe py311 """
+Web development environment.
+
+Includes:
+- Django for web framework
+- PostgreSQL adapter
+- Redis for caching
+"""
+```
+
 ### Delete an environment
 
 ```bash
@@ -319,6 +348,15 @@ Recipes let you export an environment as a small, portable TOML file that can re
 [recipe]
 name = "ds-stack"
 python = "3.11"
+description = """
+Data science environment with machine learning libraries.
+
+Includes:
+- NumPy for numerical computing
+- Pandas for data manipulation
+- Matplotlib for visualization
+- JupyterLab for interactive development
+"""
 
 [recipe.deps]
 packages = ["numpy", "pandas", "matplotlib", "jupyterlab"]
@@ -330,6 +368,7 @@ commands = [
 ]
 ```
 
+- **description**: Optional human-readable description (supports multi-line text)
 - **packages**: Flexible dependencies (latest compatible versions)
 - **pinned**: Exact versions for reproducibility
 - **post_install.commands**: Shell commands to run after installation (requires `--allow-scripts`)
@@ -346,6 +385,7 @@ uvcond recipe export myenv --output myenv-recipe.toml
 
 The recipe captures:
 - Python version
+- Environment description (if set)
 - All installed packages (both flexible and pinned versions)
 - Any existing post-install commands
 
@@ -369,6 +409,23 @@ uvcond recipe apply myenv-recipe.toml --allow-scripts
 
 ```bash
 uvcond recipe show myenv
+```
+
+### Set environment description
+
+```bash
+# Set a description for an environment
+uvcond recipe describe myenv "Data science environment with ML libraries"
+
+# Multi-line descriptions:
+uvcond recipe describe myenv """
+Web development environment.
+
+Includes:
+- Django web framework
+- PostgreSQL database
+- Redis caching
+"""
 ```
 
 ### Edit a recipe
