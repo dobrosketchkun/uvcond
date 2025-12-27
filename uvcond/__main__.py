@@ -200,8 +200,15 @@ def get_shell() -> Optional[str]:
 def _toml_value(value: Any) -> str:
     """Format a Python value as a TOML value."""
     if isinstance(value, str):
-        escaped = value.replace("\\", "\\\\").replace('"', '\\"')
-        return f'"{escaped}"'
+        # Check if string contains newlines - if so, use multi-line string format
+        if "\n" in value:
+            # For multi-line strings, use triple quotes and minimal escaping
+            # TOML multi-line strings don't need to escape quotes inside them
+            return f'"""\n{value}\n"""'
+        else:
+            # Single line string
+            escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+            return f'"{escaped}"'
     elif isinstance(value, bool):
         return "true" if value else "false"
     elif isinstance(value, (int, float)):
@@ -232,6 +239,8 @@ def write_recipe_toml(path: Path, recipe: Dict[str, Any]) -> None:
         lines.append(f'name = {_toml_value(recipe["name"])}')
     if "python" in recipe:
         lines.append(f'python = {_toml_value(recipe["python"])}')
+    if "description" in recipe:
+        lines.append(f'description = {_toml_value(recipe["description"])}')
     lines.append("")
     
     # [recipe.deps] section
@@ -809,13 +818,61 @@ def cmd_recipe_show(name: str) -> int:
     if not target.is_dir():
         err_console.print(f"[error]error[/error]: no env named [name]{name}[/name] at [path]{target}[/path]")
         return 1
-    
+
     rpath = recipe_path(target)
     if not rpath.is_file():
         console.print(f"[dim]Env[/dim] [name]{name}[/name] [dim]has no recipe (use 'uvcond recipe export {name}' to create one)[/dim]")
         return 0
-    
+
+    # Parse the recipe to display description nicely
+    recipe = read_recipe_toml(rpath)
+    description = recipe.get("description")
+
+    console.print(f"[bold]Recipe for:[/bold] [name]{name}[/name]")
+    console.print(f"[dim]Path:[/dim] [path]{rpath}[/path]")
+    console.print()
+
+    if description:
+        console.print("[bold]Description:[/bold]")
+        console.print(description)
+        console.print()
+
+    console.print("[bold]Full recipe:[/bold]")
     console.print(rpath.read_text(encoding="utf-8"))
+    return 0
+
+
+def cmd_recipe_describe(name: str, description: str) -> int:
+    """Set the description for an environment."""
+    target = env_dir(name)
+    if not target.is_dir():
+        err_console.print(f"[error]error[/error]: no env named [name]{name}[/name] at [path]{target}[/path]")
+        return 1
+
+    rpath = recipe_path(target)
+
+    # Load existing recipe or create minimal one
+    if rpath.is_file():
+        recipe = read_recipe_toml(rpath)
+    else:
+        # Create a new recipe with current env state
+        python_ver = get_python_version(target)
+        unpinned, pinned = get_installed_packages(target)
+        recipe = {"name": name}
+        if python_ver:
+            recipe["python"] = python_ver
+        if unpinned or pinned:
+            recipe["deps"] = {}
+            if unpinned:
+                recipe["deps"]["packages"] = unpinned
+            if pinned:
+                recipe["deps"]["pinned"] = pinned
+
+    # Set the description
+    recipe["description"] = description
+
+    write_recipe_toml(rpath, recipe)
+    console.print(f"[success]Set description[/success] for [name]{name}[/name]")
     return 0
 
 
@@ -887,6 +944,7 @@ def cmd_recipe(args: List[str]) -> int:
             "  uvcond recipe export <name> [--output FILE]\n"
             "  uvcond recipe apply <file> [--name NAME] [--pinned] [--allow-scripts]\n"
             "  uvcond recipe show <name>\n"
+            "  uvcond recipe describe <name> <description>\n"
             "  uvcond recipe edit <name>\n"
             "  uvcond recipe post <name> --add 'cmd' / --set 'cmd' / --from FILE"
         )
@@ -939,7 +997,16 @@ def cmd_recipe(args: List[str]) -> int:
             err_console.print("[dim]Usage:[/dim] uvcond recipe show <name>")
             return 1
         return cmd_recipe_show(rest[0])
-    
+
+    elif sub == "describe":
+        # Parse: describe <name> <description>
+        if len(rest) < 2:
+            err_console.print("[dim]Usage:[/dim] uvcond recipe describe <name> <description>")
+            return 1
+        name = rest[0]
+        description = " ".join(rest[1:])
+        return cmd_recipe_describe(name, description)
+
     elif sub == "edit":
         if not rest:
             err_console.print("[dim]Usage:[/dim] uvcond recipe edit <name>")
@@ -1001,6 +1068,44 @@ def cmd_recipe(args: List[str]) -> int:
 # Help and main
 # =============================================================================
 
+def cmd_info(name: str) -> int:
+    """Show information about an environment."""
+    target = env_dir(name)
+    if not target.is_dir():
+        err_console.print(f"[error]error[/error]: no env named [name]{name}[/name] at [path]{target}[/path]")
+        return 1
+
+    console.print(f"[bold]Environment:[/bold] [name]{name}[/name]")
+    console.print(f"[dim]Path:[/dim] [path]{target}[/path]")
+
+    # Show Python version
+    python_ver = get_python_version(target)
+    if python_ver:
+        console.print(f"[dim]Python:[/dim] {python_ver}")
+    else:
+        console.print(f"[dim]Python:[/dim] [dim](unknown)[/dim]")
+
+    # Show description if available
+    rpath = recipe_path(target)
+    if rpath.is_file():
+        recipe = read_recipe_toml(rpath)
+        description = recipe.get("description")
+        if description:
+            console.print(f"[dim]Description:[/dim]")
+            console.print(description)
+        else:
+            console.print(f"[dim]Description:[/dim] [dim](none)[/dim]")
+    else:
+        console.print(f"[dim]Description:[/dim] [dim](no recipe file)[/dim]")
+
+    # Show package count
+    unpinned, pinned = get_installed_packages(target)
+    total_packages = len(unpinned) + len(pinned)
+    console.print(f"[dim]Packages:[/dim] {total_packages} installed")
+
+    return 0
+
+
 def cmd_help() -> int:
     console.print(
         "[bold]uvcond[/bold] - Conda-like named environments on top of uv\n"
@@ -1019,11 +1124,16 @@ def cmd_help() -> int:
         "      --pinned             Use pinned versions (exact reproducibility)\n"
         "      --allow-scripts      Run post-install commands\n"
         "  uvcond recipe [info]show[/info] <name>                Show env's recipe\n"
+        "  uvcond recipe [info]describe[/info] <name> <desc>     Set env description\n"
         "  uvcond recipe [info]edit[/info] <name>                Edit recipe in editor\n"
         "  uvcond recipe [info]post[/info] <name> [options]      Manage post-install commands\n"
         "      --add 'cmd'          Append a command\n"
         "      --set 'cmd'          Replace all commands\n"
         "      --from FILE          Load commands from file\n"
+        "\n"
+        "[dim]Other commands:[/dim]\n"
+        "  uvcond [info]describe[/info] <name> <desc>            Set env description\n"
+        "  uvcond [info]info[/info] <name>                       Show env information\n"
         "\n"
         "[dim]Config commands:[/dim]\n"
         "  uvcond [info]config[/info]                            Show current configuration\n"
@@ -1080,6 +1190,21 @@ def main(argv: Optional[List[str]] = None) -> int:
         return cmd_recipe(rest)
     if sub == "config":
         return cmd_config(rest)
+    if sub == "describe":
+        if not rest:
+            err_console.print("[dim]Usage:[/dim] uvcond describe <name> <description>")
+            return 1
+        name = rest[0]
+        if len(rest) < 2:
+            # Just show description
+            return cmd_info(name)
+        description = " ".join(rest[1:])
+        return cmd_recipe_describe(name, description)
+    if sub == "info":
+        if not rest:
+            err_console.print("[dim]Usage:[/dim] uvcond info <name>")
+            return 1
+        return cmd_info(rest[0])
 
     return cmd_help()
 
